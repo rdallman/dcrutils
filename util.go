@@ -25,6 +25,7 @@ var js = `
 $(function () {
 	$('#container').highcharts({
 		chart: {
+			type: {{.Type}},
 			zoomType: 'x',
 			spacingRight: 20
 		},
@@ -46,6 +47,7 @@ $(function () {
 				color: '#808080'
 			}]
 		},
+		plotOptions: {{.PlotOptions}},
 		tooltip: {
 			shared: true,
 			valueSuffix: 'dcr'
@@ -63,6 +65,7 @@ $(function () {
 </head>
 <body>
 <script type="text/javascript" src="http://code.highcharts.com/highcharts.js"></script>
+<script type="text/javascript" src="http://code.highcharts.com/highcharts-more.js"></script>
 <div id="container" style="min-width: 310px; height: 400px; margin: 0 auto"></div>
 </body>
 </html>
@@ -95,9 +98,8 @@ func main() {
 		loadtxns(*in, *out)
 	}
 
-	maturity()
-
-	http.HandleFunc("/", looky(*in, *out))
+	http.HandleFunc("/wallet", wallet)
+	http.HandleFunc("/votey", timetovote)
 	err := http.ListenAndServe(":5000", nil)
 	if err != nil {
 		log.Fatal(err)
@@ -289,23 +291,47 @@ func tickets2() []map[string]interface{} {
 	return datas
 }
 
-func looky(in, out string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("doin it")
-		datas := tickets2()
-		fmt.Println("got it")
-		args := map[string]interface{}{"DataArray": datas}
+func wallet(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("doin it")
+	datas := tickets2()
+	fmt.Println("got it")
+	args := map[string]interface{}{"DataArray": datas, "Type": "spline", "PlotOptions": struct{}{}}
 
-		tmpl.Execute(os.Stdout, args)
-		if err := tmpl.Execute(w, args); err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(err.Error()))
-		}
+	tmpl.Execute(os.Stdout, args)
+	if err := tmpl.Execute(w, args); err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(err.Error()))
 	}
 }
 
-func maturity() {
+func timetovote(w http.ResponseWriter, r *http.Request) {
+	datas := maturity()
+
+	opts := map[string]interface{}{
+		"column": map[string]interface{}{
+			"pointPadding": 0,
+			"borderWidth":  0,
+			"groupPadding": 0,
+			"shadow":       false,
+		},
+	}
+	args := map[string]interface{}{
+		"DataArray":   datas,
+		"Type":        "column",
+		"PlotOptions": opts,
+	}
+
+	tmpl.Execute(os.Stdout, args)
+	if err := tmpl.Execute(w, args); err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(err.Error()))
+	}
+}
+
+func maturity() []map[string]interface{} {
 	var votey []int // time to vote, in blocks, as series
+	points := make(map[int]float64)
+	btod := func(i int) int { return i / 256 }
 
 	for _, txn := range txns {
 		if len(txn.Vout) > 0 {
@@ -314,7 +340,10 @@ func maturity() {
 				if vout.Tx.Type == "stakegen" {
 					for _, vin := range txn.Vin {
 						if vin.Block > 0 {
-							votey = append(votey, int(txn.Block-vin.Block)) // time to vote (in blocks)
+							// TODO collapse pool and normal wallet
+							time := int(txn.Block - vin.Block)
+							votey = append(votey, time) // time to vote (in blocks)
+							points[btod(time)] += 1
 							break outer
 						}
 					}
@@ -343,7 +372,6 @@ func maturity() {
 	sort.Sort(sort.IntSlice(votey)) // TODO meh
 	median := votey[len(votey)/2]
 
-	btod := func(i int) int { return i / 256 }
 	//fmt.Println("live", live)
 	fmt.Println("voted", len(votey))
 	fmt.Println("median", median, btod(median))
@@ -351,4 +379,15 @@ func maturity() {
 	fmt.Println("min", min, btod(min))
 	fmt.Println("max", max, btod(max))
 	// TODO 95 99 percentiles
+
+	var pts [][2]float64
+	for key, val := range points {
+		pts = append(pts, [2]float64{float64(key), val})
+	}
+	datas := []map[string]interface{}{{
+		"name": "days",
+		"data": pts,
+	}}
+
+	return datas
 }
